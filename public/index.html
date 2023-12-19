@@ -4,8 +4,80 @@
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>a</title>
+        <link href="./index.css" rel="stylesheet" />
     </head>
     <body>
-        Hello!
+        <section id="menu"></section>
+        <section id="content">
+            <section>
+                <h1>Calendar</h1>
+                <h3>Get data from day</h3>
+                <p>Description</p>
+                <p>Params:</p>
+                <p>
+                    Returns<br /><code>
+                        {<br />
+                        UUID: "", <br />
+                        Tasks: [], <br />
+                        Bills: [], <br />
+                        Reminders: []
+                        <br />
+                        }
+                        <br />
+                    </code>
+                </p>
+
+                <p>URL</p>
+            </section>
+            <section>
+                <h1>Finance</h1>
+            </section>
+        </section>
     </body>
+
+    <script>
+        const content = document.getElementById("content");
+        const sections = content.querySelectorAll("section");
+        sections.forEach(createMenuCategory);
+
+        function createMenuCategory(item) {
+            const container = document.createElement("div");
+            const element = document.createElement("h2");
+            element.textContent = item.querySelector("h1").textContent;
+            const subtitles = item.querySelectorAll("h3");
+            container.appendChild(element);
+            for (i = 0; i < subtitles.length; i++) {
+                const subtitle = document.createElement("a");
+                subtitles[i].id = subtitles[i].textContent;
+                subtitle.href = "#" + subtitles[i].id;
+                const innerSubtitle = document.createElement("h4");
+                innerSubtitle.textContent = subtitles[i].textContent;
+                subtitle.appendChild(innerSubtitle);
+                container.appendChild(subtitle);
+            }
+            document.getElementById("menu").appendChild(container);
+        }
+
+        const main = "30px";
+        const elements = document.body.querySelectorAll("h2");
+        for (i = 0; i < elements.length; i++) {
+            const element = elements[i].parentNode;
+            element.style.height = "fit-content";
+            element.setAttribute("total", element.clientHeight + "px");
+            element.style.height = main;
+            elements[i].onclick = () => clicked(element);
+        }
+
+        function clicked(element) {
+            var main = "30px";
+            var second = element.getAttribute("total");
+            element = element;
+            console.log(element);
+            if (element.style.height === main) {
+                element.style.height = second;
+            } else {
+                element.style.height = main;
+            }
+        }
+    </script>
 </html>
