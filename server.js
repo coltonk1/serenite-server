@@ -81,6 +81,60 @@ function generateToken(uuid) {
     return token;
 }
 
+function compareAll(targetString, compareToArray) {
+    // Gets each word from string
+    const targetWords = targetString.split(" ");
+
+    // Gets each word's value from the target string
+    const targetCharSum = targetWords.map((word) => {
+        let total = 0;
+        for (i = 0; i < word.length; i++) {
+            total += word.charCodeAt(i);
+        }
+        return total;
+    });
+
+    var similarityValues = [];
+    // Gets similarities of each element in compareToArray
+    compareToArray.forEach((element) => searchMethod(element, targetCharSum, targetWords, similarityValues));
+
+    // Sorts array in terms of similarity
+    const sortedArray = compareToArray.sort((a, b) => {
+        return similarityValues[compareToArray.indexOf(a)] - similarityValues[compareToArray.indexOf(b)];
+    });
+
+    return sortedArray;
+}
+
+function searchMethod(element, targetCharSum, targetWords, similarityValues) {
+    // Gets each word from string
+    const elementWords = element.split(" ");
+    // Gets each word's value from the compared element
+    const elementCharSum = elementWords.map((word) => {
+        let total = 0;
+        for (i = 0; i < word.length; i++) {
+            total += word.charCodeAt(i);
+        }
+        return total;
+    });
+
+    var total = 0;
+    for (i = 0; i < targetCharSum.length; i++) {
+        // Gets the minimum number comparing
+        // the value of the target string's word
+        // at index i to all values in the compare
+        // string. This is multiplied by the difference
+        // in length of both words.
+        total += Math.min(
+            ...elementCharSum.map(
+                (c) =>
+                    Math.abs(c - targetCharSum[i]) * (Math.abs(targetWords[i].length - elementWords[elementCharSum.indexOf(c)].length) + 1)
+            )
+        );
+    }
+    similarityValues.push(total);
+}
+
 app.use("/api", (req, res, next) => {
     const auth = req.headers["authorization"];
     const token = auth && auth.split(" ")[1];
@@ -107,7 +161,7 @@ app.get("/api/searchNotes", async (req, res) => {
     const { uuid, start_date, end_date, search_query } = req.query;
     const client = await sql.connect();
     const { rows } = await client.query(
-        `SELECT title FROM notes WHERE uuid = '${uuid}' WHERE created_date BETWEEN '${start_date}' AND '${end_date}' ORDER BY created_date LIMIT 100 OFFSET 0`
+        `SELECT title FROM notes WHERE uuid = '${uuid}' WHERE created_date BETWEEN '${start_date}' AND '${end_date}' ORDER BY created_date LIMIT 300 OFFSET 0`
     );
     client.release();
     res.status(200).json({ data: rows });
