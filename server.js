@@ -35,7 +35,7 @@ app.post("/api/login", async (req, res) => {
 });
 
 app.post("/api/register", async (req, res) => {
-    const { username, email, password } = req;
+    const { username, email, password } = req.body;
 
     // TODO: Check if valid username, email, and password.
 
@@ -94,13 +94,123 @@ app.use("/api", (req, res, next) => {
     try {
         // Get user information for further processing.
         const decoded = jwt.verify(token, secretKey);
-        req.user = decoded;
+        req.uuid = decoded;
         next(); // Continue to requested endpoint.
     } catch (error) {
         // If the token is not verified then throw error.
         // Unauthorized
         res.status(401).json({ error: "Invalid token" });
     }
+});
+
+app.get("/api/searchNotes", async (req, res) => {
+    const { uuid, start_date, end_date, search_query } = req.query;
+    const client = await sql.connect();
+    const { rows } = await client.query(
+        `SELECT title FROM notes WHERE uuid = '${uuid}' WHERE created_date BETWEEN '${start_date}' AND '${end_date}' ORDER BY created_date LIMIT 100 OFFSET 0`
+    );
+    client.release();
+    res.status(200).json({ data: rows });
+});
+
+app.get("/api/getNote", async (req, res) => {
+    const { uuid, title } = req.query;
+    const client = await sql.connect();
+    const { rows } = await client.query(`SELECT * FROM notes WHERE uuid = '${uuid}' AND WHERE title = '${title}'`);
+    client.release();
+    res.status(200).json({ data: rows });
+});
+
+app.post("/api/createNote", async (req, res) => {
+    const { uuid, title, content } = req.body;
+    const client = await sql.connect();
+    await client.query(`INSERT INTO notes (uuid, title, content) VALUES ('${uuid}', '${title}', '${content}')`);
+    client.release();
+    res.status(200);
+});
+
+app.get("/api/searchFinance", async (req, res) => {
+    const { uuid, start_date, end_date } = req.query;
+    const client = await sql.connect();
+    const { rows } = await client.query(
+        `SELECT * FROM finances WHERE uuid = '${uuid}' WHERE created_date BETWEEN '${start_date}' AND '${end_date}' ORDER BY created_date`
+    );
+    client.release();
+    res.status(200).json({ data: rows });
+});
+
+app.post("/api/createFinance", async (req, res) => {
+    const { uuid, title, price, due_date } = req.body;
+    const client = await sql.connect();
+    await client.query(`INSERT INTO finances (uuid, title, price, due_date) VALUES ('${uuid}', '${title}', '${price}', '${due_date}')`);
+    client.release();
+    res.status(200);
+});
+
+app.get("/api/currentReminders", async (req, res) => {
+    const { uuid, date } = req.query;
+    const client = await sql.connect();
+    const { rows } = await client.query(
+        `SELECT * FROM reminders WHERE uuid = '${uuid}' WHERE created_date >= '${date}' ORDER BY created_date`
+    );
+    client.release();
+    res.status(200).json({ data: rows });
+});
+
+app.get("/api/searchReminders", async (req, res) => {
+    const { uuid, start_date, end_date } = req.query;
+    const client = await sql.connect();
+    const { rows } = await client.query(
+        `SELECT * FROM reminders WHERE uuid = '${uuid}' WHERE created_date BETWEEN '${start_date}' AND '${end_date}' ORDER BY created_date`
+    );
+    client.release();
+    res.status(200).json({ data: rows });
+});
+
+app.get("/api/pastReminders", async (req, res) => {
+    const { uuid, date } = req.query;
+    const client = await sql.connect();
+    const { rows } = await client.query(
+        `SELECT * FROM reminders WHERE uuid = '${uuid}' WHERE created_date < '${date}' ORDER BY created_date`
+    );
+    client.release();
+    res.status(200).json({ data: rows });
+});
+
+app.post("/api/createReminder", async (req, res) => {
+    const { uuid, title, price, due_date, description } = req.body;
+    const client = await sql.connect();
+    await client.query(
+        `INSERT INTO reminders (uuid, title, price, due_date, description) VALUES ('${uuid}', '${title}', '${price}', '${due_date}', '${description}')`
+    );
+    client.release();
+    res.status(200);
+});
+
+app.get("/api/searchGuides", async (req, res) => {
+    const { uuid, start_date, end_date, search_title } = req.query;
+    const client = await sql.connect();
+    const { rows } = await client.query(
+        `SELECT title FROM guides WHERE uuid = '${uuid}' WHERE created_date BETWEEN '${start_date}' AND '${end_date}' ORDER BY created_date`
+    );
+    client.release();
+    res.status(200).json({ data: rows });
+});
+
+app.get("/api/getGuide", async (req, res) => {
+    const { uuid, title } = req.query;
+    const client = await sql.connect();
+    const { rows } = await client.query(`SELECT * FROM guides WHERE uuid = '${uuid}' WHERE title = '${title}'`);
+    client.release();
+    res.status(200).json({ data: rows });
+});
+
+app.post("/api/createGuide", async (req, res) => {
+    const { uuid, title, content } = req.body;
+    const client = await sql.connect();
+    await client.query(`INSERT INTO reminders (uuid, title, content) VALUES ('${uuid}', '${title}', '${content}')`);
+    client.release();
+    res.status(200);
 });
 
 app.get("/server", async (req, res) => {
@@ -115,16 +225,21 @@ app.get("/server", async (req, res) => {
 });
 
 app.get("/", (req, res) => {
-    res.sendFile(__dirname + "/public/index.html");
+    res.sendFile(__dirname + "/public/main/index.html");
 });
 
-app.get("/test", (req, res) => {
-    res.status(200).json({ test: "yoo" });
+app.get("/error.css", (req, res) => {
+    res.sendFile(__dirname + "/public/error/error.css");
+});
+
+app.get("/index.css", (req, res) => {
+    res.sendFile(__dirname + "/public/main/index.css");
 });
 
 app.all("*", (req, res) => {
     // Handle all unmatched requests
-    res.send("This route is not defined, but handled by the server!");
+    res.status(404).json({ error: "Page not found." });
+    // res.sendFile(__dirname + "/public/error/index.html");
 });
 
 const PORT = process.env.PORT || 3000;

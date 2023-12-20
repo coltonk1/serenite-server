@@ -1,0 +1,35 @@
+* {
+    padding: 0;
+    margin: 0;
+}
+
+body {
+    background: #101015;
+}
+
+div {
+    position: fixed;
+    margin: auto;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    padding: 5vw 10vw;
+    text-align: center;
+    width: fit-content;
+    height: fit-content;
+    font-weight: bolder;
+    color: #dcdcdc;
+    background: linear-gradient(to bottom right, #00000050, #000000aa);
+    font-size: 20px;
+    font-family: system-ui;
+}
+
+h1 {
+    font-size: 75px;
+}
+
+h4 {
+    font-weight: 500;
+    color: #bcbcbc;
+}
