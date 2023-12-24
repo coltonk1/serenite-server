@@ -4,10 +4,57 @@ const { sql } = require("@vercel/postgres");
 const jwt = require("jsonwebtoken");
 const { v4: uuidv4 } = require("uuid");
 const DOMPurify = require("dompurify");
+const { Pool } = require("pg");
+
+const pool = new Pool({
+    connectionString: process.env.POSTGRES_URL,
+});
 
 const secretKey = process.env.SECRETKEY;
 
 app.get("/api/logout", async (req, res) => {});
+
+app.post("/api/otpVerification", async (req, res) => {
+    const { username, password, otp } = req;
+
+    if (!username || !password || !otp) {
+        res.send(401).json({ error: "Necessary parameters not given." });
+    }
+
+    // SQL stuff
+    try {
+        // Connect to sql
+        const client = await sql.connect();
+        const { rows } = await client.query(`SELECT * FROM users WHERE username = '${username}' AND password = '${password}' LIMIT 1`);
+        // If there is only 1 row, then the input must be correct credentials.
+        if (rows.length === 1) {
+            let timestampFromDb = new Date(rows[0].code_valid_until);
+            let currentTime = new Date();
+            if (otp !== rows[0].otp) {
+                client.release(); // End connection
+                // Unauthorized
+                res.status(401).json({ otpError: true, error: "Wrong OTP" });
+                return;
+            } else if (timestampFromDb > currentTime) {
+                client.release(); // End connection
+                // Unauthorized
+                res.status(401).json({ otpError: true, error: "OTP Expired" });
+                return;
+            }
+            await client.query(`INSERT INTO users WHERE username='${username}' AND password='${password}' (verified) VALUES (true)`);
+            client.release(); // End connection
+            // Accepted
+            res.status(202).json({ token: generateToken(uuid) });
+            return;
+        }
+        client.release(); // End connection
+        // Unauthorized
+        res.status(401).json({ error: "Username or password not correct." });
+    } catch (error) {
+        // Not implemented
+        res.status(501).json({ error });
+    }
+});
 
 app.post("/api/login", async (req, res) => {
     const { username, password } = req;
@@ -17,15 +64,18 @@ app.post("/api/login", async (req, res) => {
     try {
         // Connect to sql
         const client = await sql.connect();
-        const { rows } = await client.query(`SELECT * FROM users WHERE username = '${username}' AND password = '${password}'`);
+        const { rows } = await client.query(`SELECT * FROM users WHERE username = '${username}' AND password = '${password}' LIMIT 1`);
         // If there is only 1 row, then the input must be correct credentials.
+        client.release(); // End connection
         if (rows.length === 1) {
-            client.release(); // End connection
+            if (!rows[0].verified) {
+                // Unauthorized
+                res.status(401).json({ otpError: true, error: "Not verified." });
+            }
             // Accepted
             res.status(202).json({ token: generateToken(uuid) });
             return;
         }
-        client.release(); // End connection
         // Unauthorized
         res.status(401).json({ error: "Username or password not correct." });
     } catch (error) {
@@ -52,24 +102,36 @@ app.post("/api/register", async (req, res) => {
         const client = await sql.connect();
         // Generate uuid
         const uuid = uuidv4();
-        const { rows } = await client.query(`SELECT * FROM users WHERE username = '${username}'`);
-        // If username already exists, give error
+        const { rows } = await client.query(
+            `SELECT * FROM users WHERE username = '${username}' OR (email = '${email}' AND verified = true) LIMIT 1`
+        );
+        // If username or email already exists, give error
         if (rows.length != 0) {
             client.release();
-            // Conflict
-            res.status(409).json({ error: "Username already taken." });
+            if (rows[0].username === username) {
+                // Conflict
+                res.status(409).json({ error: "Username already taken." });
+            } else if (rows[0].email === email) {
+                // Conflict
+                res.status(409).json({ error: "Email already in use." });
+            }
             return;
         }
+
+        const OTP = generateOTP();
+        const OTPTime = generateOTPTimestamp();
+
         // Create new user
         await client.query(
-            `INSERT INTO users (uuid, username, password, registerdate) VALUES ('${uuid}', '${username}', '${password}', '${formattedDate}')`
+            `INSERT INTO users (uuid, username, password, registerdate, code, code_valid_until, email) VALUES ('${uuid}', '${username}', '${password}', '${formattedDate}', '${OTP}', '${OTPTime}', '${email}')`
         );
         client.release(); // End connection
+        sendOTP(email, OTP);
         // Created
-        res.status(201).json({ token: generateToken(uuid) });
+        res.status(201).json({ status: "Created" });
     } catch (error) {
         // Not implemented
-        res.status(501).json({ error });
+        res.status(501).json({ error: error.message });
     }
 });
 
@@ -135,25 +197,86 @@ function searchMethod(element, targetCharSum, targetWords, similarityValues) {
     similarityValues.push(total);
 }
 
-app.use("/api", (req, res, next) => {
-    const auth = req.headers["authorization"];
-    const token = auth && auth.split(" ")[1];
-
+function verifyToken(token) {
     if (!token) {
         // If there is no token, return error.
         // Unauthorized
-        return res.status(401).json({ error: "Unauthorized" });
+        return { status: 401, error: "Unauthorized" };
     }
 
     try {
         // Get user information for further processing.
         const decoded = jwt.verify(token, secretKey);
-        req.uuid = decoded;
-        next(); // Continue to requested endpoint.
+        return { status: 200, decoded: decoded };
     } catch (error) {
         // If the token is not verified then throw error.
         // Unauthorized
-        res.status(401).json({ error: "Invalid token" });
+        return { status: 401, error: "Invalid token" };
+    }
+}
+
+app.get("/api/verifyToken", (req, res) => {
+    // www.serenite.me/api/verifyToken?token=TOKEN-HERE
+    const { token } = req.query;
+    const result = verifyToken(token);
+    res.status(result.status).json(result);
+});
+
+function generateOTP() {
+    const min = 100000; // Minimum 6-digit number
+    const max = 999999; // Maximum 6-digit number
+    const randomNumber = Math.floor(Math.random() * (max - min + 1)) + min;
+    return randomNumber.toString();
+}
+
+function generateOTPTimestamp() {
+    // Get the current date and time
+    const now = new Date();
+    // Calculate the timestamp for 15 minutes from now
+    const fifteenMinutesFromNow = new Date(now.getTime() + 15 * 60 * 1000);
+    // Convert the timestamp to a string
+    const timestampString = fifteenMinutesFromNow.toISOString();
+    return timestampString;
+}
+
+function sendOTP(email, OTP) {
+    var nodemailer = require("nodemailer");
+    var transporter = nodemailer.createTransport({
+        service: "zoho",
+        auth: {
+            user: "serenite@serenite.me",
+            pass: process.env.EMAIL_PASSWORD,
+        },
+    });
+
+    var mailOptions = {
+        from: "serenite@serenite.me",
+        to: email,
+        subject: "Email verification",
+        text: `Use the following one-time password (OTP) to verify your email address. You can use this email address to sign-in to your account. \n ${OTP} \n valid for 15 minutes.`,
+    };
+
+    transporter.sendMail(mailOptions, function (error, info) {
+        if (error) {
+            console.log(error);
+            res.send(error);
+        } else {
+            console.log("Email sent: " + info.response);
+            res.send("Done!");
+        }
+    });
+}
+
+app.use("/api", (req, res, next) => {
+    const auth = req.headers["authorization"];
+    const token = auth && auth.split(" ")[1];
+
+    const result = verifyToken(token);
+    if (result.status != 200) {
+        res.status(result.status).json({ error: result.error });
+    } else {
+        req.uuid = result.decoded;
+        next(); // Continue to requested endpoint.
     }
 });
 
@@ -161,7 +284,7 @@ app.get("/api/searchNotes", async (req, res) => {
     const { uuid, start_date, end_date, search_query } = req.query;
     const client = await sql.connect();
     const { rows } = await client.query(
-        `SELECT title FROM notes WHERE uuid = '${uuid}' WHERE created_date BETWEEN '${start_date}' AND '${end_date}' ORDER BY created_date LIMIT 300 OFFSET 0`
+        `SELECT title FROM notes WHERE uuid = '${uuid}' AND created_date BETWEEN '${start_date}' AND '${end_date}' ORDER BY created_date LIMIT 300 OFFSET 0`
     );
     client.release();
     res.status(200).json({ data: rows });
@@ -170,7 +293,7 @@ app.get("/api/searchNotes", async (req, res) => {
 app.get("/api/getNote", async (req, res) => {
     const { uuid, title } = req.query;
     const client = await sql.connect();
-    const { rows } = await client.query(`SELECT * FROM notes WHERE uuid = '${uuid}' AND WHERE title = '${title}'`);
+    const { rows } = await client.query(`SELECT * FROM notes WHERE uuid = '${uuid}' AND title = '${title}'`);
     client.release();
     res.status(200).json({ data: rows });
 });
@@ -187,7 +310,7 @@ app.get("/api/searchFinance", async (req, res) => {
     const { uuid, start_date, end_date } = req.query;
     const client = await sql.connect();
     const { rows } = await client.query(
-        `SELECT * FROM finances WHERE uuid = '${uuid}' WHERE created_date BETWEEN '${start_date}' AND '${end_date}' ORDER BY created_date`
+        `SELECT * FROM finances WHERE uuid = '${uuid}' AND created_date BETWEEN '${start_date}' AND '${end_date}' ORDER BY created_date`
     );
     client.release();
     res.status(200).json({ data: rows });
@@ -205,7 +328,7 @@ app.get("/api/currentReminders", async (req, res) => {
     const { uuid, date } = req.query;
     const client = await sql.connect();
     const { rows } = await client.query(
-        `SELECT * FROM reminders WHERE uuid = '${uuid}' WHERE created_date >= '${date}' ORDER BY created_date`
+        `SELECT * FROM reminders WHERE uuid = '${uuid}' AND created_date >= '${date}' ORDER BY created_date`
     );
     client.release();
     res.status(200).json({ data: rows });
@@ -225,7 +348,7 @@ app.get("/api/pastReminders", async (req, res) => {
     const { uuid, date } = req.query;
     const client = await sql.connect();
     const { rows } = await client.query(
-        `SELECT * FROM reminders WHERE uuid = '${uuid}' WHERE created_date < '${date}' ORDER BY created_date`
+        `SELECT * FROM reminders WHERE uuid = '${uuid}' AND created_date < '${date}' ORDER BY created_date`
     );
     client.release();
     res.status(200).json({ data: rows });
@@ -254,7 +377,7 @@ app.get("/api/searchGuides", async (req, res) => {
 app.get("/api/getGuide", async (req, res) => {
     const { uuid, title } = req.query;
     const client = await sql.connect();
-    const { rows } = await client.query(`SELECT * FROM guides WHERE uuid = '${uuid}' WHERE title = '${title}'`);
+    const { rows } = await client.query(`SELECT * FROM guides WHERE uuid = '${uuid}' AND title = '${title}'`);
     client.release();
     res.status(200).json({ data: rows });
 });
