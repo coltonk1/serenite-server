@@ -3,14 +3,31 @@ const app = express();
 const { sql } = require("@vercel/postgres");
 const jwt = require("jsonwebtoken");
 const { v4: uuidv4 } = require("uuid");
+const cors = require("cors");
+const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 
 // ! I should move every endpoint to it's own file.
 // ! Need to hash or do some sort of security for passwords. (I should never be able to see a user's password)
 
+// ! Include token scope, verify origin using a encrypted secret key from login page. Change login page to express.js server so that the key can be securely stored and never directly sent to client. Here, verify the key. Maybe even use a token system for that as well.
+// ! Include on the token string, "----DO NOT SHARE THIS TOKEN PUBLICLY----"
+// ! But honestly why should I care where the origin comes from? Sure, somebody can fake it but they still have to use valid credentials so whatever ig? The worst case that I can think of is somebody uses the endpoints to make their own login and steals that stuff. In which case maybe I should change it but idrk.
+
 // Key used to verify token.
 const secretKey = process.env.SECRETKEY;
 
+const tempCors = cors({
+    origin: "http://localhost:3000", // Your allowed origin
+    methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
+    credentials: true, // Enable credentials (cookies, authorization headers, etc.)
+});
+// temporary
+app.use(tempCors);
+app.use(express.json());
+
 app.get("/api/logout", async (req, res) => {});
+// Eventually I will make this so that it sets a logout time in their account, and any token that was created before this time will no longer work.
 
 app.post("/api/otpVerification", async (req, res) => {
     const { username, password, otp } = req.body;
@@ -18,6 +35,7 @@ app.post("/api/otpVerification", async (req, res) => {
     if (!username || !password || !otp) {
         // Check to make sure all necessary parameters are not null.
         res.status(401 /* Unathorized */).json({ error: "Necessary parameters not given." });
+        return;
     }
 
     try {
@@ -68,19 +86,20 @@ app.post("/api/otpVerification", async (req, res) => {
         client.release(); // End connection
 
         // Once all is done, send a temperary token to use for authentication.
-        res.status(202 /* Accepted */).json({ token: generateToken(uuid) });
-        // At this point the client should log in the user.
+        res.status(202 /* Accepted */).json();
+        // User should not log in again.
     } catch (error) {
         res.status(501 /* Not Implemented */).json({ error });
     }
 });
 
 app.post("/api/login", async (req, res) => {
-    const { username, password } = req.body;
+    const { username, password, websiteURL } = req.body;
 
-    if (!username || !password) {
+    if (!username || !password || !websiteURL) {
         // Check to make sure all necessary parameters are not null.
         res.status(401 /* Unathorized */).json({ error: "Necessary parameters not given." });
+        return;
     }
 
     try {
@@ -98,18 +117,23 @@ app.post("/api/login", async (req, res) => {
         if (rows.length === 0) {
             // If there is not a result, then the username / email or password must be incorrect.
             res.status(401 /* Unathorized */).json({ error: "Username or password not correct. " });
+            return;
         }
 
         if (!rows[0].verified) {
             // If the user is not verified, then the user cannot be logged in yet.
             res.status(401 /* Unathorized */).json({ otpError: true, error: "Not verified." });
+            return;
         }
+
+        const uuid = rows[0].uuid;
 
         // At this point the credentials should be correct, as well as the user should be verified.
         // Send temporary token for authentication.
-        res.status(202 /* Accepted */).json({ token: generateToken(uuid) });
+        res.status(202 /* Accepted */).json({ token: generateToken(uuid, websiteURL) });
+        // ! My client will redirect to the website with this token as query. The redirect website should then store the token someone (sessionStorage maybe), then change the URL to not include the token, as anyone with that link will be logged in to that account.
     } catch (error) {
-        res.status(501 /* Not implemented */).json({ error });
+        res.status(501 /* Not implemented */).json({ error: error.message });
     }
 });
 
@@ -119,6 +143,7 @@ app.post("/api/register", async (req, res) => {
     if (!username || !password || !email) {
         // Check to make sure all necessary parameters are not null.
         res.status(401 /* Unathorized */).json({ error: "Necessary parameters not given." });
+        return;
     }
 
     try {
@@ -161,7 +186,7 @@ app.post("/api/register", async (req, res) => {
 
         // Query: Create new user.
         query = {
-            text: "INSERT INTO users (uuid, username, password, registerdate, code, code_valid_until, email) VALUES ($1, $2, $3, $4, $5, $6, $7",
+            text: "INSERT INTO users (uuid, username, password, created_date, code, code_valid_until, email) VALUES ($1, $2, $3, $4, $5, $6, $7)",
             values: [uuid, username, password, formattedDate, OTP, OTPTime, email],
         };
         await client.query(query);
@@ -176,15 +201,34 @@ app.post("/api/register", async (req, res) => {
     }
 });
 
+const doNotShare = "----DO NOT SHARE THIS TOKEN PUBLICLY----";
 // Tokens should only be given to those who are verified, and logged in with valid credentials.
-function generateToken(uuid) {
+function generateToken(uuid, scope) {
     // Store uuid so server can access their account in database.
-    const payload = { uuid };
+    const payload = { uuid, scope };
     // Token only valid for 1 hour.
     const options = { expiresIn: "1h" };
     // Create final token.
     const token = jwt.sign(payload, secretKey, options);
-    return token;
+    return doNotShare + token + doNotShare;
+}
+
+function verifyToken(token) {
+    if (!token) {
+        // If there is no token, return error.
+        return { status: 401 /* Unathorized */, error: "No token given." };
+    }
+
+    token = token.replaceAll(doNotShare, "");
+
+    try {
+        // Get user information for further processing.
+        const decoded = jwt.verify(token, secretKey);
+        return { status: 200 /* OK */, decoded: decoded };
+    } catch (error) {
+        // If the token is not verified then throw error.
+        return { status: 401 /* Unathorized */, error: "Invalid token" };
+    }
 }
 
 function compareAll(targetString, compareToArray) {
@@ -251,22 +295,6 @@ function searchMethod(element, targetCharSum, targetWords, similarityValues) {
     similarityValues.push(total);
 }
 
-function verifyToken(token) {
-    if (!token) {
-        // If there is no token, return error.
-        return { status: 401 /* Unathorized */, error: "Unauthorized" };
-    }
-
-    try {
-        // Get user information for further processing.
-        const decoded = jwt.verify(token, secretKey);
-        return { status: 200 /* OK */, decoded: decoded };
-    } catch (error) {
-        // If the token is not verified then throw error.
-        return { status: 401 /* Unathorized */, error: "Invalid token" };
-    }
-}
-
 app.get("/api/verifyToken", (req, res) => {
     // www.serenite.me/api/verifyToken?token=TOKEN-HERE
     const { token } = req.query;
@@ -276,6 +304,56 @@ app.get("/api/verifyToken", (req, res) => {
     // error and decoded can both be null.
 
     res.status(result.status).json(result);
+});
+
+app.get("/api/verifyEmail", async (req, res) => {
+    const { email, redirectURL, otp } = req.query;
+
+    if (!email || !redirectURL || !otp) {
+        // Check to make sure all necessary parameters are not null.
+        // res.status(401 /* Unathorized */).json({ error: "Necessary parameters not given." });
+        res.redirect(`https://login.serenite.me?error='Necessary parameters not given'&redirectURL=${redirectURL}`);
+        return;
+    }
+
+    try {
+        // Connect to sql
+        const client = await sql.connect();
+
+        // Query: Select user where username or email is already used.
+        var query = {
+            text: "SELECT * FROM users WHERE email = $1 AND code = $2 LIMIT 1",
+            values: [email, otp],
+        };
+        // Get array of users
+        const { rows } = await client.query(query);
+
+        if (rows.length === 0) {
+            // If there are no results, then something is way wrong.
+            // res.status(401 /* Unathorized */).json({ error: "Not valid, try again." });
+            res.redirect(`https://login.serenite.me?error='Not valid, try again'&redirectURL=${redirectURL}`);
+            return;
+        }
+        if (new Date() > rows[0].code_valid_until) {
+            // If the current time is after 15 minutes of when the otp was created, then it has expired.
+            // res.status(401 /* Unathorized */).json({ error: "Code expired." });
+            res.redirect(`https://login.serenite.me?error='Code expired'&redirectURL=${redirectURL}`);
+            return;
+        }
+
+        // Query: Change user's status to verified.
+        query = {
+            text: "INSERT INTO users WHERE email = $1 AND code = $2 (verified) VALUES (true)",
+            values: [email, code],
+        };
+        await client.query(query);
+
+        // res.status(200 /* OK */).json({ status: "OK" });
+        res.redirect(`https://login.serenite.me?redirectURL=${redircetURL}`);
+        // At this point, the user should be redirected back to the login screen to login again.
+    } catch (error) {
+        res.status(501 /* Not implemented */).json(error.message);
+    }
 });
 
 function generateOTP() {
@@ -295,35 +373,51 @@ function generateOTPTimestamp() {
     return timestampString;
 }
 
-function sendOTP(email, OTP) {
-    var nodemailer = require("nodemailer");
+async function sendOTP(email, OTP, redirectURL = encodeURIComponent("https://serenite.me/")) {
+    const resend = new Resend(process.env.RESEND_KEY);
 
-    // Logs in to serenite email.
-    var transporter = nodemailer.createTransport({
-        service: "zoho",
-        auth: {
-            user: "serenite@serenite.me",
-            pass: process.env.EMAIL_PASSWORD,
-        },
-    });
-
-    // Message.
     var mailOptions = {
-        from: "serenite@serenite.me",
+        from: "do-not-reply@serenite.me",
         to: email,
         subject: "Serenite email verification",
-        text: `Use the following one-time password (OTP) to verify your email address. You can use this email address to sign-in to your account. \n ${OTP} \n valid for 15 minutes. \n \n Not your account? Click here to delete it. (not implemented)`,
+        html: `
+    <p>Use the following one-time password (OTP) to verify your email address. You can use this email address to sign in to your account. DO NOT share this with anybody.</p>
+    <p><strong><a href = "https://serenite.me/api/verifyEmail?otp=${OTP}&email=${email}&redirectURL=${redirectURL}">Verify email here</a></strong></p>
+    <p>Valid for 15 minutes.</p>
+    <p>Not your account? <a href="https://serenite.me/api/deleteAccountUnverified?otp=${OTP}&email=${email}">Click here</a>.</p>
+    <p>If you need help, contact support with this link -> (not implemented)</p>
+  `,
     };
 
-    // Send message.
-    transporter.sendMail(mailOptions, function (error, info) {
-        if (error) {
-            console.log(error);
-        } else {
-            console.log("Email sent: " + info.response);
-        }
-    });
+    console.log("Sending OTP to " + email + " : " + OTP);
+    console.log(mailOptions);
+
+    await resend.emails.send(mailOptions);
 }
+
+app.get("/api/deleteAccountUnverified", async (req, res) => {
+    // serenite.me/api/deleteAccountUnverified?otp=OTP_HERE&email=EMAIL_HERE
+    // In the OTP email, send link with OTP to here.
+    const { otp, email } = req.query;
+
+    if (!otp || !email) {
+        // Necessary parameters not given.
+    }
+
+    // Query: Replace username with unobtainable username, then replace email with record of deletion in case of problem.
+    const query = {
+        text: "INSERT INTO users WHERE code = $1 AND email = $2 (username, email) VALUES ($3, $4)",
+        values: [otp, email, "Deleted Account", "Deleted Email: " + email],
+    };
+
+    try {
+        const client = await sql.connect();
+        await client.query(query);
+        client.release(); // End connection
+    } catch (error) {
+        // Error
+    }
+});
 
 // For other requests that come through the serenite.me/api endpoint.
 app.use("/api", (req, res, next) => {
@@ -338,6 +432,24 @@ app.use("/api", (req, res, next) => {
         // Otherwise continue with request.
         req.uuid = result.decoded;
         next(); // Continue to requested endpoint.
+    }
+});
+
+app.get("/api/deleteAccountVerified", async (req, res) => {
+    // Check username / email, password
+
+    // Query: Replace username with unobtainable username, then replace email with record of deletion in case of problem.
+    const query = {
+        text: "INSERT INTO users WHERE code = $1 AND email = $2 (username, email) VALUES ($3, $4)",
+        values: [otp, email, "Deleted Account", "Deleted Email: " + email],
+    };
+
+    try {
+        const client = await sql.connect();
+        await client.query(query);
+        client.release(); // End connection
+    } catch (error) {
+        // Error
     }
 });
 
@@ -496,7 +608,7 @@ app.all("*", (req, res) => {
     // res.sendFile(__dirname + "/public/error/index.html");
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8000;
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
