@@ -345,7 +345,7 @@ app.get("/api/verifyEmail", async (req, res) => {
 
         // Query: Change user's status to verified.
         query = {
-            text: "INSERT INTO users WHERE email = $1 AND code = $2 (verified) VALUES (true)",
+            text: "UPDATE users SET verified = true WHERE email = $1 AND code = $2",
             values: [email, otp],
         };
         await client.query(query);
