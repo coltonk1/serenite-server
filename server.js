@@ -4,8 +4,6 @@ const { sql } = require("@vercel/postgres");
 const jwt = require("jsonwebtoken");
 const { v4: uuidv4 } = require("uuid");
 const cors = require("cors");
-const nodemailer = require("nodemailer");
-const { Resend } = require("resend");
 
 // ! I should move every endpoint to it's own file.
 // ! Need to hash or do some sort of security for passwords. (I should never be able to see a user's password)
@@ -18,7 +16,7 @@ const { Resend } = require("resend");
 const secretKey = process.env.SECRETKEY;
 
 const tempCors = cors({
-    origin: "http://localhost:3000", // Your allowed origin
+    origin: "*", // Your allowed origin
     methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
     credentials: true, // Enable credentials (cookies, authorization headers, etc.)
 });
@@ -95,6 +93,10 @@ app.post("/api/otpVerification", async (req, res) => {
 
 app.post("/api/login", async (req, res) => {
     const { username, password, websiteURL } = req.body;
+
+    if (!websiteURL) {
+        req.body.websiteURL = "https://hub.serenite.me";
+    }
 
     if (!username || !password || !websiteURL) {
         // Check to make sure all necessary parameters are not null.
@@ -192,7 +194,7 @@ app.post("/api/register", async (req, res) => {
         await client.query(query);
         client.release(); // End connection
 
-        sendOTP(email, OTP); // Send email to given email including OTP.
+        await sendOTP(email, OTP); // Send email to given email including OTP.
 
         res.status(201 /* Created */).json({ status: "Created" });
         // At this point client should ask user to verify account.
@@ -344,7 +346,7 @@ app.get("/api/verifyEmail", async (req, res) => {
         // Query: Change user's status to verified.
         query = {
             text: "INSERT INTO users WHERE email = $1 AND code = $2 (verified) VALUES (true)",
-            values: [email, code],
+            values: [email, otp],
         };
         await client.query(query);
 
@@ -373,26 +375,48 @@ function generateOTPTimestamp() {
     return timestampString;
 }
 
+app.get("/testOTP", async (req, res) => {
+    await sendOTP("coltonkaraffa@gmail.com", "534212");
+    res.send("OK");
+});
+
 async function sendOTP(email, OTP, redirectURL = encodeURIComponent("https://serenite.me/")) {
-    const resend = new Resend(process.env.RESEND_KEY);
+    console.log("Sending email");
 
-    var mailOptions = {
-        from: "do-not-reply@serenite.me",
-        to: email,
-        subject: "Serenite email verification",
-        html: `
-    <p>Use the following one-time password (OTP) to verify your email address. You can use this email address to sign in to your account. DO NOT share this with anybody.</p>
-    <p><strong><a href = "https://serenite.me/api/verifyEmail?otp=${OTP}&email=${email}&redirectURL=${redirectURL}">Verify email here</a></strong></p>
-    <p>Valid for 15 minutes.</p>
-    <p>Not your account? <a href="https://serenite.me/api/deleteAccountUnverified?otp=${OTP}&email=${email}">Click here</a>.</p>
-    <p>If you need help, contact support with this link -> (not implemented)</p>
-  `,
-    };
+    try {
+        const res = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${process.env.RESEND_KEY}`,
+            },
+            body: JSON.stringify({
+                from: "Serenite <do-not-reply@serenite.me>",
+                to: [email],
+                subject: "Email Verification",
+                html: `
+                <p>Use the following one-time password (OTP) to verify your email address. You can use this email address to sign in to your account. DO NOT share this with anybody.</p>
+                <p><strong><a href="https://api.serenite.me/api/verifyEmail?otp=${OTP}&email=${email}&redirectURL=${redirectURL}">Verify email here</a></strong></p>
+                <p>Valid for 15 minutes.</p>
+                <p>Not your account? <a href="https://api.serenite.me/api/deleteAccountUnverified?otp=${OTP}&email=${email}">Click here</a>.</p>
+                <p>If you need help, contact support with this link -> (not implemented)</p>
+            `,
+            }),
+        });
 
-    console.log("Sending OTP to " + email + " : " + OTP);
-    console.log(mailOptions);
+        console.log("Fetch request completed");
 
-    await resend.emails.send(mailOptions);
+        if (res.ok) {
+            const data = await res.json();
+            console.log("Email sent successfully. Response:", data);
+        } else {
+            console.error("Failed to send email. HTTP status:", res.status);
+        }
+    } catch (error) {
+        console.error("Error sending email:", error.message);
+    } finally {
+        console.log("waddup");
+    }
 }
 
 app.get("/api/deleteAccountUnverified", async (req, res) => {
@@ -591,15 +615,7 @@ app.get("/server", async (req, res) => {
 });
 
 app.get("/", (req, res) => {
-    res.sendFile(__dirname + "/public/main/index.html");
-});
-
-app.get("/error.css", (req, res) => {
-    res.sendFile(__dirname + "/public/error/error.css");
-});
-
-app.get("/index.css", (req, res) => {
-    res.sendFile(__dirname + "/public/main/index.css");
+    res.redirectURL("www.serenite.me");
 });
 
 app.all("*", (req, res) => {
