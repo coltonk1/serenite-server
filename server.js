@@ -155,7 +155,7 @@ app.post("/api/login", async (req, res) => {
     }
 });
 
-api.post("/api/resendVerification", async (req, res) => {
+app.post("/api/resendVerification", async (req, res) => {
     const client = await sql.connect();
 
     const { email } = req.body;
